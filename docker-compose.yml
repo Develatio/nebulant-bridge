@@ -1,0 +1,20 @@
+name: nebulant
+
+services:
+  bridge:
+    container_name: nebulant_bridge
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: develatio/nebulant_bridge
+    command: "make run ARGS='-x -b 0.0.0.0:16789 -bs ultrasecret'"
+    networks:
+      - nebulant-private
+      - nebulant-lan
+
+networks:
+  nebulant-private:
+    name: nebulant-private
+  nebulant-lan:
+    name: nebulant-lan
+    external: true

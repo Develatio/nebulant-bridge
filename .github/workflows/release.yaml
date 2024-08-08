@@ -1,0 +1,331 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: goversion
+        run: echo "goversion=$(make goversion)" >> "$GITHUB_OUTPUT"
+        id: goversion
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: ${{ steps.goversion.outputs.goversion }}
+
+      - name: build artifacts
+        run: make buildall
+
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: dist
+          path: dist/
+
+  sign_darwin:
+    needs: build
+    name: Sign Darwin
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Version
+        run: echo "version=$(make bridgeversion)" >> "$GITHUB_OUTPUT"
+        id: version
+
+      - name: Prerelease
+        run: echo "prerelease=$(make ispre)" >> "$GITHUB_OUTPUT"
+        id: prerelease
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Import Certificates
+        uses: Apple-Actions/import-codesign-certs@v1
+        with:
+          p12-file-base64: ${{ secrets.DEVELOPER_ID_CERT }}
+          p12-password: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+
+      - name: Sign darwin amd64 binary
+        run: codesign -s EF141CA55650788DF2FFE58E51071F048243BFE6 -o runtime --timestamp -f -v ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-amd64
+
+      - name: Sign darwin arm64 binary
+        run: codesign -s EF141CA55650788DF2FFE58E51071F048243BFE6 -o runtime --timestamp -f -v ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-arm64
+
+      - name: Compress darwin amd64 binary
+        run: chmod a+x dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-amd64 && zip -jrm ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-amd64.zip ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-amd64
+
+      - name: Compress darwin arm64 binary
+        run: chmod a+x dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-arm64 && zip -jrm ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-arm64.zip ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-arm64
+
+      - name: Notarize darwin amd64 binary
+        run: xcrun notarytool submit ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-amd64.zip --apple-id ${{ secrets.APPLE_ID_APPLICATION_USERNAME }} --team-id ${{ secrets.APPLE_TEAM_ID }} --password ${{ secrets.APPLE_ID_APPLICATION_PASSWORD }} --verbose --wait
+
+      - name: Notarize darwin arm64 binary
+        run: xcrun notarytool submit ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-arm64.zip --apple-id ${{ secrets.APPLE_ID_APPLICATION_USERNAME }} --team-id ${{ secrets.APPLE_TEAM_ID }} --password ${{ secrets.APPLE_ID_APPLICATION_PASSWORD }} --verbose --wait
+
+      - name: Upload binary artifacts (darwin signed)
+        uses: actions/upload-artifact@v2
+        with:
+          name: dist
+          path: dist/
+
+  release:
+    needs: sign_darwin
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Version
+        run: echo "version=$(make bridgeversion)" >> "$GITHUB_OUTPUT"
+        id: version
+
+      - name: Prerelease
+        run: echo "prerelease=$(make ispre)" >> "$GITHUB_OUTPUT"
+        id: prerelease
+
+      - name: Create release notes
+        run: shasum dist/*/nebulant* > SHASUM && mkdir -p tmp && cp RELEASE.md tmp/NOTES.md && echo -e "\n## SHASUM\n\`\`\`" >> tmp/NOTES.md && cat SHASUM >> tmp/NOTES.md && echo -e "\n\`\`\`" >> tmp/NOTES.md
+
+      - name: release
+        uses: actions/create-release@v1
+        id: create_release
+        with:
+          draft: false
+          prerelease: ${{ fromJSON(steps.prerelease.outputs.prerelease) }}
+          release_name: nebulant-bridge ${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref }}
+          body_path: tmp/NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload linux-arm artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-linux-arm
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-linux-arm
+          asset_content_type: application/x-executable
+
+      - name: Upload linux-arm64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-linux-arm64
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-linux-arm64
+          asset_content_type: application/x-executable
+
+      - name: Upload linux-386 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-linux-386
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-linux-386
+          asset_content_type: application/x-executable
+
+      - name: Upload linux-amd64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-linux-amd64
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-linux-amd64
+          asset_content_type: application/x-executable
+
+      - name: Upload freebsd-386 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-freebsd-386
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-freebsd-386
+          asset_content_type: application/x-executable
+
+      - name: Upload freebsd-amd64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-freebsd-amd64
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-freebsd-amd64
+          asset_content_type: application/x-executable
+
+      - name: Upload freebsd-arm64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-freebsd-arm64
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-freebsd-arm64
+          asset_content_type: application/x-executable
+
+      - name: Upload freebsd-arm artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-freebsd-arm
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-freebsd-arm
+          asset_content_type: application/x-executable
+
+      - name: Upload openbsd-386 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-openbsd-386
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-openbsd-386
+          asset_content_type: application/x-executable
+
+      - name: Upload openbsd-amd64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-openbsd-amd64
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-openbsd-amd64
+          asset_content_type: application/x-executable
+
+      - name: Upload openbsd-arm64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-openbsd-arm64
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-openbsd-arm64
+          asset_content_type: application/x-executable
+
+      - name: Upload openbsd-arm artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-openbsd-arm
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-openbsd-arm
+          asset_content_type: application/x-executable
+
+      - name: Upload windows-386.exe artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-windows-386.exe
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-windows-386.exe
+          asset_content_type: application/x-dosexec
+
+      - name: Upload windows-amd64.exe artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-windows-amd64.exe
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-windows-amd64.exe
+          asset_content_type: application/x-dosexec
+
+      - name: Upload windows-arm64.exe artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-windows-arm64.exe
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-windows-arm64.exe
+          asset_content_type: application/x-dosexec
+
+      - name: Upload windows-arm.exe artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-windows-arm.exe
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-windows-arm.exe
+          asset_content_type: application/x-dosexec
+
+      - name: Upload darwin-amd64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-amd64.zip
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-darwin-amd64.zip
+          asset_content_type: application/x-mach-binary
+
+      - name: Upload darwin-arm64 artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/v${{ steps.version.outputs.version }}/nebulant-bridge-darwin-arm64.zip
+          asset_name: nebulant-bridge-${{ steps.version.outputs.version }}-darwin-arm64.zip
+          asset_content_type: application/x-mach-binary
+
+      - name: Upload shasum artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./SHASUM
+          asset_name: SHASUM
+          asset_content_type: text/plain
+
+      - name: Prepare upload to r2 version number
+        run: echo "VERSION_NUMBER=$(make goversion)" >> "$GITHUB_OUTPUT"
+        id: vnumber
+
+      - name: Prepare upload to r2 version date
+        run: echo "VERSION_DATE=$(git log -1 --date=format:'%Y/%m/%d' --format=%cd)" >> "$GITHUB_OUTPUT"
+        id: vdate
+
+      - name: Download latest version of cli
+        run: curl "https://releases.nebulant.app/v0.5.1-beta/nebulant-linux-amd64" -o nebulant
+
+      - name: Upload to r2
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_ACCESS_KEY_ID }}
+          CLOUDFLARE_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_SECRET_ACCESS_KEY }}
+        run: chmod a+x ./nebulant && ./nebulant run -f ./publish_release.nbp --SOURCEPATH=./dist/ --DSTPATH="bridge/" --BUCKET=nebulant-app-cli-releases --VERSION_NUMBER=${{ steps.vnumber.outputs.VERSION_NUMBER }} --VERSION_DATE=${{ steps.vdate.outputs.VERSION_DATE }} --URL_DOMAIN=releases.nebulant.app
